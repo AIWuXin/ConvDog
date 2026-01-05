@@ -8,53 +8,72 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.console import Console, Group, Text
 import onnxruntime as ort
+import onnx_graphsurgeon as gs
 
-from convdog.core.graph import ConvDogGraph
+from convdog.core.graph import ConvDogModel
 from convdog.utils.logger import logger
+
 
 
 class ModelStats:
     """保存并提取模型统计信息的结构体"""
 
-    def __init__(self, graph: ConvDogGraph, name: str):
+    def __init__(self, model: ConvDogModel, name: str):
         self.name = name
-        self.graph = graph
-        self.opset = graph.model.opset_import[0].version
-        self.ir_version = graph.model.ir_version
-        self.size_mb = graph.model.ByteSize() / (1024 * 1024)
+        # 假设你的 ConvDogGraph 现在内部维护了一个 gs_graph 属性
+        # 如果没有，可以通过 gs.import_onnx(graph_wrapper.model) 转换
+        g = model.graph
+        self.graph = g
+        self.model = model
 
-        # 1. 统计算子数量 (Nodes)
-        self.op_counts = Counter([node.op_type for node in graph.model.graph.node])
+        self.opset = g.opset
+        self.ir_version = model.model.ir_version
+        self.size_mb = model.model.ByteSize() / (1024 * 1024)
 
-        # 2. 统计权重精度 (Initializers)
-        self.weight_counts = Counter([str(arr.dtype) for arr in graph.initializers.values()])
+        # 1. 统计算子数量 (GS 中 node.op 代替了 node.op_type)
+        self.op_counts = Counter([node.op for node in g.nodes])
 
-        # 3. 统计对齐性 (TensorCore Alignment: dims % 8 == 0)
+        # 2. 提取所有的 Initializers (GS 中叫 Constants)
+        # gs.Constant 对象包含 .values (numpy数组) 和 .name
+        all_constants = [t for t in g.tensors().values() if isinstance(t, gs.Constant)]
+
+        # 3. 统计权重精度与对齐性 (TensorCore Alignment)
+        self.weight_counts = Counter([str(c.values.dtype) for c in all_constants])
+
         self.aligned_count = 0
-        self.total_weight_layers = len(graph.initializers)
-        for arr in graph.initializers.values():
+        self.total_weight_layers = len(all_constants)
+        self.total_params = 0
+        self.dtype_params = defaultdict(int)
+
+        for c in all_constants:
+            arr = c.values
+            # 统计总参数量
+            self.total_params += arr.size
+            self.dtype_params[str(arr.dtype)] += arr.size
+
+            # 统计对齐性 (dims % 8 == 0)
             if all(d % 8 == 0 for d in arr.shape if d > 1):
                 self.aligned_count += 1
 
-        # 4. 总参数量
-        self.total_params = sum([arr.size for arr in graph.initializers.values()])
-        self.dtype_params = defaultdict(int)
-        for arr in graph.initializers.values():
-            self.dtype_params[str(arr.dtype)] += arr.size
-
-        # 5. 统计输入输出
-        self.inputs = self._parse_io(graph.model.graph.input)
-        self.outputs = self._parse_io(graph.model.graph.output)
+        # 4. 统计输入输出 (GS 中直接是 graph.inputs / graph.outputs)
+        self.inputs = self._parse_gs_io(g.inputs)
+        self.outputs = self._parse_gs_io(g.outputs)
 
     @staticmethod
-    def _parse_io(io_list):
+    def _parse_gs_io(io_list):
+        """解析 GS 的输入输出变量"""
         info = []
         for x in io_list:
-            shape = []
-            if x.type.tensor_type.HasField("shape"):
-                for dim in x.type.tensor_type.shape.dim:
-                    shape.append(str(dim.dim_value) if dim.dim_value > 0 else dim.dim_param)
-            info.append(f"{x.name}: ({', '.join(shape)})")
+            # x 在这里是一个 gs.Variable 对象
+            shape_str = []
+            for d in x.shape:
+                if isinstance(d, int):
+                    shape_str.append(str(d))
+                elif isinstance(d, str):
+                    shape_str.append(d) # 符号维度
+                else:
+                    shape_str.append("?")
+            info.append(f"{x.name}: ({', '.join(shape_str)})")
         return info
 
 
@@ -79,9 +98,7 @@ def run_inference(model_proto_bytes):
     运行推理。改进版：优先从 Session 获取输入要求，实现类型自适应。
     """
     try:
-        sess_options = ort.SessionOptions()
-        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
-        sess = ort.InferenceSession(model_proto_bytes, providers=['CPUExecutionProvider'], sess_options=sess_options)
+        sess = ort.InferenceSession(model_proto_bytes, providers=['CPUExecutionProvider'])
 
         input_dict = {}
         # 1. 动态获取 Session 需要的输入
@@ -118,13 +135,13 @@ def run_inference(model_proto_bytes):
         return None, str(e)
 
 
-def calculate_rel_error(original_proto, optimized_proto):
+def calculate_rel_error(original_proto: ModelStats, optimized_proto: ModelStats):
     """
     计算相对误差。不再依赖外部传入的 inputs_info，实现全自动收敛。
     """
     # 转换 bytes
-    orig_bytes = original_proto.model.SerializeToString()
-    opt_bytes = optimized_proto.model.SerializeToString()
+    orig_bytes = original_proto.model.serialize_to_string()
+    opt_bytes = optimized_proto.model.serialize_to_string()
 
     # 1. 运行原始模型
     ref_outs, err_ref = run_inference(orig_bytes)
@@ -201,7 +218,7 @@ def print_comparison_table(original: ModelStats, optimized: ModelStats, elapsed_
     console.print(table)
 
 
-def print_every_layer_quant_table(graph: ConvDogGraph):
+def print_every_layer_quant_table(graph: ConvDogModel):
     """单独的量化状态表：展示权重类型分布"""
     console = Console()
     table = Table(title="💎 量化细节", header_style="bold blue")
@@ -239,9 +256,15 @@ def print_quant_summary(original: ModelStats, optimized: ModelStats, elapsed_tim
 
     # --- 2. 中间：回退层 (Fallback) ---
     fallback_layers = []
-    for name, arr in optimized.graph.initializers.items():
-        if str(arr.dtype) == "float32":
-            fallback_layers.append((name, arr.size * arr.itemsize / 1024))
+    for name, tensor in optimized.graph.tensors().items():
+        if isinstance(tensor, gs.Constant):
+            arr = tensor.values  # 获取底层的 numpy 数组
+            if str(arr.dtype) == "float32":
+                # 此时 arr 是 numpy 对象，拥有 .size 和 .itemsize
+                mem_size_kb = (arr.size * arr.itemsize) / 1024
+                fallback_layers.append((name, mem_size_kb))
+
+    # 排序逻辑保持不变
     fallback_layers.sort(key=lambda x: x[1], reverse=True)
 
     fb_table = Table(box=box.SIMPLE, header_style="bold red")
@@ -271,7 +294,7 @@ def print_quant_summary(original: ModelStats, optimized: ModelStats, elapsed_tim
     diag_table.add_row("Op Reduction", f"{reduction:.1f}%")
 
     # 误差分析
-    rel_error = calculate_rel_error(original.graph, optimized.graph)
+    rel_error = calculate_rel_error(original, optimized)
     if rel_error is not None:
         if rel_error == "ERR_TYPE":
             diag_table.add_row("Rel Error Δ", "[red bold]ORT 运行失败!!![/]")

@@ -4,7 +4,7 @@ import time
 from typing import Dict, Optional
 
 from convdog.quantizer.fp16 import FP16Quantizer
-from convdog.core.graph import ConvDogGraph
+from convdog.core.graph import ConvDogModel
 from convdog.utils.logger import logger
 from convdog.utils.stats import ModelStats, print_comparison_table, print_quant_summary
 from convdog.optimizer.O0 import O0Optimizer
@@ -31,7 +31,7 @@ def optimize_model(
         input_shapes: Optional[Dict[str, int]] = None
 ):
     # 加载原始模型
-    graph = ConvDogGraph(input_path)
+    graph = ConvDogModel(input_path)
     original_stats = ModelStats(graph, input_path)
     o0_optimizer = O0Optimizer(graph, input_shapes)
 

@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
-from convdog.core.graph import ConvDogGraph
+from convdog.core.graph import ConvDogModel
 from convdog.utils.logger import logger
 
 class BasePass(ABC):
     def __init__(self):
         self.name = self.__class__.__name__
 
-    def run(self, dog_graph: ConvDogGraph) -> bool:
+    def run(self, dog_graph: ConvDogModel) -> bool:
         """
         运行优化 Pass
         :param dog_graph: ConvDogGraph 实例
@@ -20,5 +20,5 @@ class BasePass(ABC):
         return modified
 
     @abstractmethod
-    def process(self, dog_graph: ConvDogGraph) -> bool:
+    def process(self, dog_graph: ConvDogModel) -> bool:
         pass

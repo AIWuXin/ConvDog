@@ -1,30 +1,30 @@
-import collections
-from typing import Dict, Optional
 import ast
 import math
+from typing import Dict
 
 import numpy as np
 import onnx
+import onnx_graphsurgeon as gs
 from onnx import numpy_helper
 
 from convdog.utils.logger import logger
 
 
-class ConvDogGraph(object):
+class ConvDogModel(object):
     def __init__(self, model_path: str):
         logger.info(f"正在嗅探模型: [bold white]{model_path}[/]", extra={"markup": True})
-        self.model = onnx.load(model_path)
-        # 初始化索引
-        self.nodes = {}
-        self.initializers: Dict[str, np.ndarray] = {}
-        self.producers = {}
-        self.consumers = collections.defaultdict(list)
-        self.update_indexes()
-        logger.info(f"成功嗅探模型: [bold white]{model_path}[/]")
+        try:
+            self.model = onnx.load(model_path)
+            self._raw_graph = self.model.graph
+            self._graph = gs.import_onnx(self.model)
+            logger.info(f"成功嗅探模型: [bold white]{model_path}[/]")
+        except Exception as e:
+            logger.error(f"模型嗅探失败: [bold white]{model_path}[/]，错误信息: {e}")
+            raise e
 
     @property
-    def graph(self) -> onnx.GraphProto:
-        return self.model.graph
+    def graph(self) -> gs.Graph:
+        return self._graph
 
     def inject_convdog_info(self, author_name="ConvDog🐕"):
         """
@@ -55,41 +55,6 @@ class ConvDogGraph(object):
 
         logger.debug(f"成功注入元数据，留下爪印：{author_name}")
 
-    def update_indexes(self):
-        """
-        重置并重新构建全图索引。
-        修复点：确保 self.initializers 始终存储 NumPy 数组而非 TensorProto。
-        """
-        self.nodes.clear()
-        self.initializers.clear()
-        self.producers.clear()
-        self.consumers.clear()
-
-        # 1. 建立节点、生产者、消费者逻辑
-        for node in self.graph.node:
-            if node.name:
-                self.nodes[node.name] = node
-
-            for output in node.output:
-                self.producers[output] = node
-
-            for input_name in node.input:
-                self.consumers[input_name].append(node)
-
-        # 2. 【修复关键】：建立权重索引时，强制转换 Proto 为 Numpy
-        for init in self.graph.initializer:
-            # 这样保证了其他 Pass（如 FP16Quantizer）拿到的永远是 array
-            self.initializers[init.name] = numpy_helper.to_array(init)
-
-        logger.debug("图索引已刷新：[cyan]%d[/] 节点, [cyan]%d[/] 权重数组",
-                     len(self.graph.node), len(self.initializers), extra={"markup": True})
-
-    def get_initializer_array(self, name: str) -> Optional[np.ndarray]:
-        """
-        获取权重数组。因为索引里存的就是 Numpy，直接返回即可。
-        """
-        return self.initializers.get(name)
-
     def add_initializer(self, name: str, array: np.ndarray):
         """
         向图中添加或更新权重。
@@ -108,9 +73,6 @@ class ConvDogGraph(object):
                 break
         if not found:
             self.graph.initializer.append(new_init)
-
-        # 3. 同步更新内部 NumPy 索引
-        self.initializers[name] = array
 
     @staticmethod
     def _parser_symbolic_shape(
@@ -203,7 +165,9 @@ class ConvDogGraph(object):
         # 重新刷新节点列表
         self.model.graph.ClearField("node")
         self.model.graph.node.extend(new_nodes)
-        self.update_indexes()
+
+    def fold_tensors(self):
+        pass
 
     def resize_input_shape(self, input_shapes: dict):
         """
@@ -223,7 +187,7 @@ class ConvDogGraph(object):
                         dim.dim_value = target_shape[i]
                 logger.debug(f"GraphCore: 已修改输入 {input_proto.name} 的尺寸数据")
 
-        for idx, value_info in enumerate(self.graph.value_info):
+        for idx, value_info in enumerate(self.model.graph.value_info):
             for dim in value_info.type.tensor_type.shape.dim:
                 if dim.HasField("dim_param"):
                     cur_symbolic_shape = dim.dim_param
@@ -234,7 +198,9 @@ class ConvDogGraph(object):
                         dim.ClearField("dim_param")
                         dim.dim_value = static_shape
 
-        self.formalize_graph()
+        gs_model = gs.import_onnx(self.model)
+        self.model = gs.export_onnx(gs_model)
+        self._raw_graph = self.model.graph
 
         # 核心步骤：重新推理形状以确保中间 ValueInfo 逻辑一致
         import onnx.shape_inference
@@ -248,7 +214,9 @@ class ConvDogGraph(object):
         except Exception as e:
             logger.error(e)
             logger.warning("静态图检查失败!!!")
-        self.update_indexes()
+
+    def serialize_to_string(self):
+        return self.model.SerializeToString()
 
     def save(self, output_path: str):
         """执行最终检查并保存"""
@@ -256,8 +224,6 @@ class ConvDogGraph(object):
             # 注意：保存前如果有大量 add_initializer，其实不需要 full update_indexes
             # 除非你修改了节点的 input/output 拓扑。
             # 为了保险起见保留它，但也确保了其中的转换逻辑是正确的。
-            self.update_indexes()
-
             onnx.checker.check_model(self.model)
             onnx.save(self.model, output_path)
             logger.success(f"导出成功: [underline]{output_path}[/]", extra={"markup": True})

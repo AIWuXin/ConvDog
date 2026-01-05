@@ -2,11 +2,11 @@ import numpy as np
 import onnx
 from onnx import TensorProto, numpy_helper
 from convdog.utils.logger import logger
-from convdog.core.graph import ConvDogGraph
+from convdog.core.graph import ConvDogModel
 
 
 class FP16Quantizer:
-    def __init__(self, graph: ConvDogGraph, safe_mode=False):
+    def __init__(self, graph: ConvDogModel, safe_mode=False):
         self.graph = graph
         self.model = self.graph.model
         self.safe_mode = safe_mode
