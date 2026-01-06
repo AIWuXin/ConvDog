@@ -380,14 +380,14 @@ def print_quant_summary(original: ModelStats, optimized: ModelStats):
     ori_speed, opt_speed = calculate_speed(original, optimized)
     speedup = ori_speed / (opt_speed + 1e-9)
     diag_table.add_row("Ori Speed", f"{ori_speed:.2f}ms")
-    diag_table.add_row("Op Speed", f"{opt_speed:.2f}ms")
+    diag_table.add_row("Opt Speed", f"{opt_speed:.2f}ms")
     if speedup > 1.1:
         speed_color, speed_icon = "bold green", "🚀"
     elif speedup >= 0.95:
         speed_color, speed_icon = "bold yellow", "📈"
     else:
         speed_color, speed_icon = "bold red", "📉"
-    diag_table.add_row("Speed Rate", f"{speed_icon} [{speed_color}]{speedup:.2f}%[/]")
+    diag_table.add_row("Speed Rate", f"{speed_icon} [{speed_color}]{speedup:.2f}[/]")
 
     # 精度分布条 (Visual Progress Bar)
     # 计算 FP16 占比
