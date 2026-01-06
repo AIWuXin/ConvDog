@@ -1,4 +1,5 @@
 import os
+import time
 from collections import Counter, defaultdict
 
 import numpy as np
@@ -93,6 +94,42 @@ def get_diff_str(old_val, new_val, is_size=False):
         return f"{new_val} [bold {color}]{arrow}[/]"
 
 
+def generate_random_inputs(sess):
+    try:
+        input_dict = {}
+        # 1. 动态获取 Session 需要的输入
+        for input_meta in sess.get_inputs():
+            name = input_meta.name
+            shape = input_meta.shape
+            dtype_str = input_meta.type  # e.g. 'tensor(float16)'
+
+            # 处理动态 Shape (None 或 str)
+            fixed_shape = []
+            for s in shape:
+                if isinstance(s, int) and s > 0:
+                    fixed_shape.append(s)
+                else:
+                    # 如果用户在 O0 没指定 shapes，这里兜底用 1
+                    fixed_shape.append(1)
+
+            # 类型映射
+            if "float16" in dtype_str:
+                target_dtype = np.float16
+            elif "int64" in dtype_str:
+                target_dtype = np.int64
+            else:
+                target_dtype = np.float32
+
+            # 生成随机数据
+            data = np.random.randn(*fixed_shape).astype(target_dtype)
+            input_dict[name] = data
+
+        return input_dict
+    except Exception as e:
+        logger.error(e)
+        return None
+
+
 def run_inference(model_proto_bytes):
     """
     运行推理。改进版：优先从 Session 获取输入要求，实现类型自适应。
@@ -171,6 +208,36 @@ def calculate_rel_error(original_proto: ModelStats, optimized_proto: ModelStats)
     return avg_error * 100
 
 
+def calculate_speed(original_proto: ModelStats, optimized_proto: ModelStats):
+    # 转换 bytes
+    orig_bytes = original_proto.model.serialize_to_string()
+    opt_bytes = optimized_proto.model.serialize_to_string()
+
+    # 加载
+    orig_model = ort.InferenceSession(orig_bytes, providers=['CPUExecutionProvider'])
+    opt_model = ort.InferenceSession(opt_bytes, providers=['CPUExecutionProvider'])
+    random_inputs = generate_random_inputs(orig_model)
+
+    # 预热
+    _ = orig_model.run(None, random_inputs)
+    _ = opt_model.run(None, random_inputs)
+
+    # 统计
+    iters = 30
+    t1 = time.time_ns()
+    for _ in range(iters):
+        _ = orig_model.run(None, random_inputs)
+    t2 = time.time_ns()
+    orig_time_it = (t2 - t1) / 1_000_000 / iters
+    t1 = time.time_ns()
+    for _ in range(iters):
+        _ = opt_model.run(None, random_inputs)
+    t2 = time.time_ns()
+    opt_time_it = (t2 - t1) / 1_000_000 / iters
+
+    return orig_time_it, opt_time_it
+
+
 def print_comparison_table(original: ModelStats, optimized: ModelStats, elapsed_time: float):
     """
     基础优化对比表：展示算子变化明细
@@ -232,7 +299,7 @@ def print_every_layer_quant_table(graph: ConvDogModel):
     console.print(table)
 
 
-def print_quant_summary(original: ModelStats, optimized: ModelStats, elapsed_time: float):
+def print_quant_summary(original: ModelStats, optimized: ModelStats):
     """
     专家级看板：量化对比 + 回退分析 + 部署诊断
     """
@@ -284,7 +351,7 @@ def print_quant_summary(original: ModelStats, optimized: ModelStats, elapsed_tim
     # 对齐检查 (TensorCore 友好度)
     alignment_rate = (
                 optimized.aligned_count / optimized.total_weight_layers * 100) if optimized.total_weight_layers > 0 else 0
-    adj_status = "[green]Excellent[/]" if alignment_rate > 90 else "[yellow]Fair[/]"
+    adj_status = "[green]Excellent[/]" if alignment_rate > 90 else "[yellow](Fair)[/]"
     diag_table.add_row("TC Alignment", f"{alignment_rate:.1f}% {adj_status}")
 
     # 算子消减率
@@ -308,6 +375,19 @@ def print_quant_summary(original: ModelStats, optimized: ModelStats, elapsed_tim
             diag_table.add_row("Rel Error Δ", f"[{color}]{rel_error:.3f}% {status}[/]")
     else:
         diag_table.add_row("Rel Error Δ", "[dim]ORT not found[/]")
+
+    # 速度分析
+    ori_speed, opt_speed = calculate_speed(original, optimized)
+    speedup = ori_speed / (opt_speed + 1e-9)
+    diag_table.add_row("Ori Speed", f"{ori_speed:.2f}ms")
+    diag_table.add_row("Op Speed", f"{opt_speed:.2f}ms")
+    if speedup > 1.1:
+        speed_color, speed_icon = "bold green", "🚀"
+    elif speedup >= 0.95:
+        speed_color, speed_icon = "bold yellow", "📈"
+    else:
+        speed_color, speed_icon = "bold red", "📉"
+    diag_table.add_row("Speed Rate", f"{speed_icon} [{speed_color}]{speedup:.2f}%[/]")
 
     # 精度分布条 (Visual Progress Bar)
     # 计算 FP16 占比
