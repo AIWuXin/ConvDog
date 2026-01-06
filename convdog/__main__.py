@@ -5,8 +5,13 @@ from typing import Dict, Optional
 
 from convdog.core.graph import ConvDogModel
 from convdog.optimizer.O0 import O0Optimizer
+from convdog.optimizer.O1 import O1Optimizer
 from convdog.utils.logger import logger
-from convdog.utils.stats import ModelStats, print_comparison_table, print_quant_summary
+from convdog.utils.stats import (
+    ModelStats,
+    print_comparison_table,
+    print_quant_summary
+)
 
 
 def parse_shape_arg(shape_str) -> Optional[Dict[str, int]]:
@@ -29,6 +34,11 @@ def optimize_model(
         opt_level: str = "O0",
         input_shapes: Optional[Dict[str, int]] = None
 ):
+    if opt_level not in ["O0", "O1", "O2", "O3"]:
+        # O0/O1/O2/O3 其他优化路径...
+        logger.error("[x] 暂不支持的优化等级!!!")
+        sys.exit(-1)
+
     # 加载原始模型
     graph = ConvDogModel(input_path)
     original_stats = ModelStats(graph, input_path)
@@ -38,13 +48,12 @@ def optimize_model(
     graph.inject_convdog_info()
 
     start_time = time.time()
-    if opt_level == "O0":
-        optimized_graph = o0_optimizer.apply()
-        logger.success(f"[*] O0等级优化完毕!")
-    else:
-        # O1/O2/O3 其他优化路径...
-        logger.error("[x] 暂不支持的优化等级!!!")
-        sys.exit(-1)
+    optimized_graph = o0_optimizer.apply()
+    logger.success(f"[*] O0等级优化完毕!")
+    if opt_level == "O1":
+        o1_optimizer = O1Optimizer(graph)
+        optimized_graph = o1_optimizer.apply()
+        logger.success(f"[*] O1等级优化完毕!")
 
     elapsed = time.time() - start_time
 

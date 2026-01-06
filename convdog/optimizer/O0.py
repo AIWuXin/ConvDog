@@ -2,7 +2,7 @@ from convdog.core.graph import ConvDogModel
 from convdog.utils.logger import logger, OrtWarningPrintFilter
 
 
-class O0Optimizer:
+class O0Optimizer(object):
     """
     O0 等级优化器: 统一管理静态化、常量折叠与收敛控制
     """
@@ -14,11 +14,14 @@ class O0Optimizer:
     def apply(self) -> ConvDogModel:
         logger.info("[O0] 正在启动部署就绪优化 (Deployment Ready Pass)...")
 
-        # 1. 执行静态化 (如果用户指定了形状)
+        # 1. 执行静态化
         if self.input_shapes:
             logger.info("[O0] Step 1/2 - 正在执行静态化图手术...")
             logger.info(f" -> 注入静态形状: [bold cyan]{self.input_shapes}[/]")
-            self.graph.resize_input_shape(self.input_shapes)
+            if self.input_shapes is not None:
+                self.graph.resize_input_shape(self.input_shapes)
+            else:
+                logger.info("[O0] 无需静态化")
 
         # 2. 执行张量折叠 (带收敛监控)
         logger.info("[O0] Step 2/2 - 正在执行迭代张量折叠...")
