@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = "==3.12.*"
 dependencies = [
     "numpy>=2.0",
-    "onnx==1.19",
+    "onnx==1.18",
     "onnx-graphsurgeon>=0.5.8",
     "onnxruntime>=1.23.2",
     "rich>=14.2.0",

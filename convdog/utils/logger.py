@@ -1,6 +1,9 @@
 import logging
 import os
+import re
 from datetime import datetime
+import onnxruntime as ort
+
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.theme import Theme
@@ -33,6 +36,35 @@ class RichStripFormatter(logging.Formatter):
         result = super().format(record)
         record.msg = raw_msg
         return result
+
+
+class WarningFilter(logging.Filter):
+    """自定义警告过滤器"""
+
+    def __init__(self):
+        super().__init__()
+        # 定义要屏蔽的模式
+        self.patterns_to_suppress = [
+            r'UnsqueezeElimination cannot remove node',
+            r'onnxruntime::UnsqueezeElimination::Apply',
+            # 可以添加其他要屏蔽的警告模式
+        ]
+
+    def filter(self, record):
+        # 检查是否匹配要屏蔽的模式
+        for pattern in self.patterns_to_suppress:
+            if re.search(pattern, record.getMessage()):
+                return False  # 不记录这个日志
+        return True  # 记录这个日志
+
+
+class OrtWarningPrintFilter(object):
+    def __enter__(self):
+        ort.set_default_logger_severity(3)
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        ort.set_default_logger_severity(2)
+
 
 class ConvDogLogger:
     _instance = None
@@ -80,6 +112,10 @@ class ConvDogLogger:
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(file_formatter)
         self.logger.addHandler(file_handler)
+        ort_logger = logging.getLogger('onnxruntime')
+        warning_filter = WarningFilter()
+        ort_logger.addFilter(warning_filter)
+
 
     def get_logger(self):
         return self.logger

@@ -17,6 +17,7 @@ class ConvDogModel(object):
             self.model = onnx.load(model_path)
             self._raw_graph = self.model.graph
             self._graph = gs.import_onnx(self.model)
+            self.sync_model()
             logger.info(f"成功嗅探模型: [bold white]{model_path}[/]")
         except Exception as e:
             logger.error(f"模型嗅探失败: [bold white]{model_path}[/]，错误信息: {e}")
@@ -149,7 +150,7 @@ class ConvDogModel(object):
 
     def formalize_graph(self):
         """
-        工业级图规范化：将所有 Constant 节点转为 Initializer。
+        将所有 Constant 节点转为 Initializer。
         解决 ORT 优化器在大模型融合时对 Constant 节点的索引查找失败问题。
         """
         new_nodes = []
@@ -166,8 +167,44 @@ class ConvDogModel(object):
         self.model.graph.ClearField("node")
         self.model.graph.node.extend(new_nodes)
 
+    def reset_value_info(self):
+        # 清空模型中所有中间张量的形状信息，强制重新生成最干净的推导结果
+        while len(self._raw_graph.value_info) > 0:
+            self._raw_graph.value_info.pop()
+        self.sync_graph()
+
     def fold_tensors(self):
-        pass
+        self.formalize_graph()
+        self.sync_graph()
+        self.graph.fold_constants(
+            size_threshold=20*2**20
+        )
+        self.graph.cleanup()
+        self.sync_model()
+
+        # 核心步骤：重新推理形状以确保中间 ValueInfo 逻辑一致
+        import onnx.shape_inference
+        self.reset_value_info()
+        self.model = onnx.shape_inference.infer_shapes(
+            self.model,
+            strict_mode=True,
+            check_type=True
+        )
+        try:
+            onnx.checker.check_model(self.model, full_check=True)
+        except Exception as e:
+            logger.error(e)
+            logger.warning("静态图检查失败!!!")
+
+        self.sync_graph()
+
+    def sync_model(self):
+        self.model = gs.export_onnx(self.graph)
+        self._raw_graph = self.model.graph
+
+    def sync_graph(self):
+        self._raw_graph = self.model.graph
+        self._graph = gs.import_onnx(self.model)
 
     def resize_input_shape(self, input_shapes: dict):
         """
@@ -198,22 +235,7 @@ class ConvDogModel(object):
                         dim.ClearField("dim_param")
                         dim.dim_value = static_shape
 
-        gs_model = gs.import_onnx(self.model)
-        self.model = gs.export_onnx(gs_model)
-        self._raw_graph = self.model.graph
-
-        # 核心步骤：重新推理形状以确保中间 ValueInfo 逻辑一致
-        import onnx.shape_inference
-        self.model = onnx.shape_inference.infer_shapes(
-            self.model,
-            strict_mode=True,
-            check_type=True
-        )
-        try:
-            onnx.checker.check_model(self.model, full_check=True)
-        except Exception as e:
-            logger.error(e)
-            logger.warning("静态图检查失败!!!")
+        self.sync_graph()
 
     def serialize_to_string(self):
         return self.model.SerializeToString()
