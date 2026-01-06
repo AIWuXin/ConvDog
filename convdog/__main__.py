@@ -72,3 +72,7 @@ def main():
         args.level,
         args.shapes
     )
+
+
+if __name__ == '__main__':
+    sys.exit(main())

@@ -396,19 +396,24 @@ def print_quant_summary(original: ModelStats, optimized: ModelStats):
     # 4. 组装
     main_group = Group(
         Columns([
-            Panel(comp_table, title="📊 Precision Shift", border_style="magenta"),
-            Panel(fb_table, title="⚠️ Fallback Details", border_style="red"),
+            Panel(
+                comp_table,
+                title="📊 Precision Shift",
+                border_style="magenta"
+            ),
+            Panel(fb_table, title="🚨 Fallback Details", border_style="red"),
             Panel(diag_table, title="🚀 Deployment Ready", border_style="cyan")
         ]),
         Panel(
             Text.assemble(
                 ("Precision Distribution: ", "bold"),
                 (f"FP16 {fp16_ratio * 100:.1f}% ", "yellow"),
-                ("|" * int(fp16_ratio * 40), "yellow"),
-                ("|" * (40 - int(fp16_ratio * 40)), "cyan"),
+                ("█" * int(fp16_ratio * 40), "yellow"),
+                ("█" * (40 - int(fp16_ratio * 40)), "cyan"),
                 (f" FP32 {(1 - fp16_ratio) * 100:.1f}%", "cyan"),
             ),
-            border_style="dim"
+            border_style="dim",
+            expand=False
         )
     )
 

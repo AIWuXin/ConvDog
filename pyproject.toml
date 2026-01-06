@@ -21,3 +21,9 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["convdog*"]
 exclude = ["logs*", "tests*", "docs*"]
+
+[project.scripts]
+convdog = "convdog:__main__"
+
+[project.entry-points.console_scripts]
+convdog = "convdog:__main__"
