@@ -23,5 +23,5 @@ class BasePass(ABC):
         return modified
 
     @abstractmethod
-    def process(self, dog_graph: "gs.Graph") -> bool:
+    def process(self, graph: "gs.Graph") -> bool:
         pass

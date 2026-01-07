@@ -20,10 +20,11 @@ class FuseConsecutiveNodePass(BasePass):
         "Dropout": []
     }
 
-    def process_identity(self, graph: gs.Graph) -> gs.Graph:
+    def process_identity(self, graph: gs.Graph) -> bool:
         # 只处理f(f(x)) = f(x)的变换
 
         # 记录融合数量
+        changed = False
         fusion_count = 0
 
         # 遍历图中所有节点
@@ -56,19 +57,23 @@ class FuseConsecutiveNodePass(BasePass):
 
                         # 清空当前节点的输出，方便后面 cleanup 自动回收
                         node.outputs = []
+                        node.inputs = []
                         fusion_count += 1
+                        logger.debug(f"[O1] 成功融合: {node.name} + {prev_node.name} -> {prev_node.name}")
+                        changed = True
 
         if fusion_count > 0:
             # cleanup 会自动清除因为失去输出连接而变成死节点的“第二个节点”
             graph.cleanup()
-            logger.success(f"[O1]: 成功切除了 {fusion_count} 个冗余的恒等节点！")
+            logger.debug(f"[O1]: 成功切除了 {fusion_count} 个冗余的恒等节点！")
         else:
             logger.debug("[O1]: 未发现连续的恒等节点，保持原样。")
 
-        return graph
+        return changed
 
-    def process_gemm(self, graph: gs.Graph) -> gs.Graph:
+    def process_gemm(self, graph: gs.Graph) -> bool:
         fusion_count = 0
+        changed = False
         for node in graph.nodes:
             if node.op == "Gemm":
                 # 检查是否只连接一个算子
@@ -132,19 +137,23 @@ class FuseConsecutiveNodePass(BasePass):
                     consumer.inputs = []
                     graph.cleanup().toposort()
                     fusion_count += 1
-                    logger.debug("[O1] 成功融合: {node.name} + {consumer.name} -> Gemm")
+                    changed = True
+                    logger.debug(f"[O1] 成功融合: {node.name} + {consumer.name} -> Gemm")
 
-        return graph
+        return changed
 
-    def process_non_identity(self, graph: gs.Graph) -> gs.Graph:
-        graph = self.process_gemm(graph)
-        return graph
+    def process_non_identity(self, graph: gs.Graph) -> bool:
+        changed = self.process_gemm(graph)
+        return changed
 
-    def process(self, graph: gs.Graph) -> gs.Graph:
+    def process(self, graph: gs.Graph) -> bool:
+        # 在开始前进行清理，确保节点的 outputs (consumers) 索引是最新的
+        graph.cleanup().toposort()
         logger.debug("[O1]: 正在嗅探并融合连续重复的节点...")
         logger.debug("[O1]: 处理恒等变换节点......")
-        graph = self.process_identity(graph)
+        changed0 = self.process_identity(graph)
         logger.debug("[O1]: 处理非恒等变换节点......")
-        graph = self.process_non_identity(graph)
+        changed1 = self.process_non_identity(graph)
+        changed = changed0 or changed1
 
-        return graph
+        return changed

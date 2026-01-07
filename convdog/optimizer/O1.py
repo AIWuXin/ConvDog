@@ -3,8 +3,10 @@ from convdog.core.graph import ConvDogModel
 from convdog.utils.logger import logger
 from convdog.simplifier.fuse_consecutive_node_pass import FuseConsecutiveNodePass
 from convdog.simplifier.dead_code_elimination_pass import DeadCodeEliminationPass
+from convdog.simplifier.inverse_op_node_pass import InverseOpCancellationPass
 from convdog.simplifier.fuse_gemm_pass import GemmFusionPass
 from convdog.simplifier.base_pass import BasePass
+
 
 class O1Optimizer(object):
     def __init__(self, model: ConvDogModel, safe_mode=False):
@@ -13,12 +15,14 @@ class O1Optimizer(object):
         self.fuse_consecutive_node: Optional[BasePass] = None
         self.dead_code_elimination_pass: Optional[DeadCodeEliminationPass] = None
         self.gemm_pass: Optional[GemmFusionPass] = None
+        self.inverse_pass: Optional[InverseOpCancellationPass] = None
         self.initialize_pass()
 
     def initialize_pass(self):
         self.fuse_consecutive_node = FuseConsecutiveNodePass()
         self.dead_code_elimination_pass = DeadCodeEliminationPass()
         self.gemm_pass = GemmFusionPass()
+        self.inverse_pass = InverseOpCancellationPass()
 
     def apply(self) -> ConvDogModel:
         logger.info("[O1]: 开始执行初步算子优化和拓扑结构优化...")
@@ -35,6 +39,7 @@ class O1Optimizer(object):
             self.fuse_consecutive_node.run(self.model)
             self.dead_code_elimination_pass.run(self.model)
             self.gemm_pass.run(self.model)
+            self.inverse_pass.run(self.model)
 
             self.model.reset_value_info()
             self.model.fold_tensors()
