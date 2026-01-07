@@ -130,7 +130,7 @@ def generate_random_inputs(sess):
         return None
 
 
-def run_inference(sess, input_dict):
+def run_inference(sess: ort.InferenceSession, input_dict):
     """
     运行推理。改进版：优先从 Session 获取输入要求，实现类型自适应。
     """

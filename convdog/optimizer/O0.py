@@ -54,5 +54,4 @@ class O0Optimizer(object):
 
                 prev_node_count = current_count
 
-        logger.success("[O0] 模型优化处理完毕，准备交付！ 🐕")
         return self.graph
