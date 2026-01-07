@@ -130,41 +130,11 @@ def generate_random_inputs(sess):
         return None
 
 
-def run_inference(model_proto_bytes):
+def run_inference(sess, input_dict):
     """
     运行推理。改进版：优先从 Session 获取输入要求，实现类型自适应。
     """
     try:
-        sess = ort.InferenceSession(model_proto_bytes, providers=['CPUExecutionProvider'])
-
-        input_dict = {}
-        # 1. 动态获取 Session 需要的输入
-        for input_meta in sess.get_inputs():
-            name = input_meta.name
-            shape = input_meta.shape
-            dtype_str = input_meta.type  # e.g. 'tensor(float16)'
-
-            # 处理动态 Shape (None 或 str)
-            fixed_shape = []
-            for s in shape:
-                if isinstance(s, int) and s > 0:
-                    fixed_shape.append(s)
-                else:
-                    # 如果用户在 O0 没指定 shapes，这里兜底用 1
-                    fixed_shape.append(1)
-
-            # 类型映射
-            if "float16" in dtype_str:
-                target_dtype = np.float16
-            elif "int64" in dtype_str:
-                target_dtype = np.int64
-            else:
-                target_dtype = np.float32
-
-            # 生成随机数据
-            data = np.random.randn(*fixed_shape).astype(target_dtype)
-            input_dict[name] = data
-
         outputs = sess.run(None, input_dict)
         return outputs, None
     except Exception as e:
@@ -179,14 +149,17 @@ def calculate_rel_error(original_proto: ModelStats, optimized_proto: ModelStats)
     # 转换 bytes
     orig_bytes = original_proto.model.serialize_to_string()
     opt_bytes = optimized_proto.model.serialize_to_string()
+    orig_sess = ort.InferenceSession(orig_bytes, providers=["CPUExecutionProvider"])
+    opt_sess = ort.InferenceSession(opt_bytes, providers=["CPUExecutionProvider"])
+    input_data = generate_random_inputs(orig_sess)
 
     # 1. 运行原始模型
-    ref_outs, err_ref = run_inference(orig_bytes)
+    ref_outs, err_ref = run_inference(orig_sess, input_data)
     if err_ref:
         return "ERR_TYPE"
 
     # 2. 运行优化模型
-    opt_outs, err_opt = run_inference(opt_bytes)
+    opt_outs, err_opt = run_inference(opt_sess, input_data)
     if err_opt:
         return "ERR_TYPE"
 
@@ -195,14 +168,17 @@ def calculate_rel_error(original_proto: ModelStats, optimized_proto: ModelStats)
     for r, o in zip(ref_outs, opt_outs):
         r_f32 = r.astype(np.float32)
         o_f32 = o.astype(np.float32)
-
-        # 针对 FP16 计算余弦相似度（Cosine Similarity）比相对误差更科学
-        inner_prod = np.sum(r_f32 * o_f32)
-        iter_norm = np.linalg.norm(r_f32) * np.linalg.norm(o_f32)
-        cosine_sim = inner_prod / (iter_norm + 1e-7)
-
-        # 转换成 1 - sim 作为误差项
-        errors.append(1.0 - cosine_sim)
+        r_f32 = r_f32.flatten()
+        o_f32 = o_f32.flatten()
+        p99 = np.percentile(np.abs(r_f32), 99)
+        mask = np.logical_and(
+            np.abs(r_f32) >= (p99 / 1e3),
+            np.abs(r_f32) >= 1e-4
+        )
+        r_f32 = r_f32[mask]
+        o_f32 = o_f32[mask]
+        diff = np.abs(r_f32 - o_f32) / (np.abs(r_f32) + 1e-10)
+        errors.append(diff)
 
     avg_error = np.mean(errors)
     return avg_error * 100

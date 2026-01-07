@@ -55,27 +55,35 @@ class GemmFusionPass(BasePass):
                         logger.debug(f"[O1] 成功吃掉权重的 Transpose: {trans_node.name}")
 
                 # 4. 寻找 Add node 中非 MatMul 输出的那个输入作为 Bias (C)
-                bias_input = [i for i in consumer.inputs if i.name != node.outputs[0].name]
-                if len(bias_input) != 1:
+                C = None
+                for inp in consumer.inputs:
+                    if inp.name != node.outputs[0].name:
+                        # 增加判断：Bias 应该是合法的常量或 Initializer
+                        if isinstance(inp, gs.Constant) or (hasattr(inp, 'values')):
+                            C = inp
+                            break
+
+                if C is None:
+                    logger.debug(f"[O1] 跳过融合：找不到合法的 Bias 输入 {node.name}")
                     continue
-                C = bias_input[0]
 
                 # 5. 创建新的 Gemm 节点
-                # ONNX Gemm 属性默认: alpha=1.0, beta=1.0, transA=0
                 gemm_node = gs.Node(
                     op="Gemm",
                     name=f"Fused_Gemm_{node.name}",
                     attrs={"alpha": 1.0, "beta": 1.0, "transA": 0, "transB": trans_b},
                     inputs=[A, B, C],
-                    outputs=consumer.outputs  # 关键：接管 Add 的输出张量
+                    outputs=consumer.outputs
                 )
 
                 # 6. 将新节点加入图，并排干旧节点的引用
                 graph.nodes.append(gemm_node)
 
                 # 这种“清空输出”的操作能让接下来的 cleanup() 自动剔除孤立的旧节点和中间张量
-                node.outputs.clear()
-                consumer.outputs.clear()
+                node.outputs = []
+                node.inputs = []
+                consumer.outputs = []
+                consumer.inputs = []
 
                 changed = True
                 logger.debug(f"[O1] 成功融合: {node.name} + {consumer.name} -> Gemm")

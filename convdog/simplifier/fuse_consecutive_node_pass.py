@@ -20,8 +20,8 @@ class FuseConsecutiveNodePass(BasePass):
         "Dropout": []
     }
 
-    def process(self, graph: gs.Graph) -> gs.Graph:
-        logger.debug("[O1]: 正在嗅探并融合连续的 ReLU...")
+    def process_identity(self, graph: gs.Graph) -> gs.Graph:
+        # 只处理f(f(x)) = f(x)的变换
 
         # 记录融合数量
         fusion_count = 0
@@ -59,10 +59,92 @@ class FuseConsecutiveNodePass(BasePass):
                         fusion_count += 1
 
         if fusion_count > 0:
-            # cleanup 会自动清除因为失去输出连接而变成死节点的“第二个 ReLU”
+            # cleanup 会自动清除因为失去输出连接而变成死节点的“第二个节点”
             graph.cleanup()
             logger.success(f"[O1]: 成功切除了 {fusion_count} 个冗余的恒等节点！")
         else:
             logger.debug("[O1]: 未发现连续的恒等节点，保持原样。")
+
+        return graph
+
+    def process_gemm(self, graph: gs.Graph) -> gs.Graph:
+        fusion_count = 0
+        for node in graph.nodes:
+            if node.op == "Gemm":
+                # 检查是否只连接一个算子
+                if len(node.outputs) != 1:
+                    continue
+
+                # 查看是否为单消费者
+                consumers = node.outputs[0].outputs
+                if len(consumers) != 1:
+                    continue
+
+                consumer = consumers[0]
+                if consumer.op != "Gemm":
+                    continue
+
+                can_fuse = isinstance(node.inputs[1], gs.Constant) and \
+                           isinstance(consumer.inputs[1], gs.Constant)
+                if len(consumer.inputs) == 3:
+                    can_fuse = can_fuse and isinstance(consumer.inputs[2], gs.Constant)
+                if len(node.inputs) == 3:
+                    can_fuse = can_fuse and isinstance(node.inputs[2], gs.Constant)
+                if can_fuse:
+                    w1 = node.inputs[1].values
+                    w2 = consumer.inputs[1].values
+                    b1 = node.inputs[2].values if len(node.inputs) > 2 else 0
+                    b2 = consumer.inputs[2].values if len(consumer.inputs) > 2 else 0
+                    if node.attrs.get("transB", 0): w1 = w1.T
+                    if consumer.attrs.get("transB", 0): w2 = w2.T
+                    alpha1, beta1 = node.attrs.get("alpha", 1.0), node.attrs.get("beta", 1.0)
+                    alpha2, beta2 = consumer.attrs.get("alpha", 1.0), consumer.attrs.get("beta", 1.0)
+
+                    alpha = alpha1 * alpha2
+                    beta = 1.0
+                    a = node.inputs[0]
+                    b = w1 @ w2
+                    c = alpha2 * beta1 * (b1 @ w2) + beta2 * b2
+                    trans_a = node.attrs.get("transB", 0)
+                    trans_b = 0
+
+                    # 创建融合后节点
+                    b = gs.Constant(
+                        "w1",
+                        b
+                    )
+                    c = gs.Constant(
+                        "b1",
+                        c
+                    )
+                    gemm_node = gs.Node(
+                        op="Gemm",
+                        name=f"Fused_Gemm_{node.name}",
+                        attrs={"alpha": alpha, "beta": beta, "transA": trans_a, "transB": trans_b},
+                        inputs=[a, b, c],
+                        outputs=consumer.outputs
+                    )
+
+                    graph.nodes.append(gemm_node)
+                    node.outputs = []
+                    node.inputs = []
+                    consumer.outputs = []
+                    consumer.inputs = []
+                    graph.cleanup().toposort()
+                    fusion_count += 1
+                    logger.debug("[O1] 成功融合: {node.name} + {consumer.name} -> Gemm")
+
+        return graph
+
+    def process_non_identity(self, graph: gs.Graph) -> gs.Graph:
+        graph = self.process_gemm(graph)
+        return graph
+
+    def process(self, graph: gs.Graph) -> gs.Graph:
+        logger.debug("[O1]: 正在嗅探并融合连续重复的节点...")
+        logger.debug("[O1]: 处理恒等变换节点......")
+        graph = self.process_identity(graph)
+        logger.debug("[O1]: 处理非恒等变换节点......")
+        graph = self.process_non_identity(graph)
 
         return graph

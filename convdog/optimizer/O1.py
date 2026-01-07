@@ -21,7 +21,7 @@ class O1Optimizer(object):
         self.gemm_pass = GemmFusionPass()
 
     def apply(self) -> ConvDogModel:
-        logger.info("[O1]: 开始执行恒等切除和拓扑结构优化...")
+        logger.info("[O1]: 开始执行初步算子优化和拓扑结构优化...")
 
         # 记录优化前的初始节点数
         # 这里的 self.model.graph.node 是 ONNX Proto 的底层节点列表
@@ -42,7 +42,7 @@ class O1Optimizer(object):
             # 获取优化后的节点数量
             current_node_count = len(self.model.graph.nodes)
             diff = prev_node_count - current_node_count
-            diff_color = "green" if diff < 0 else "white"
+            diff_color = "green" if diff > 0 else "white"
             logger.info(
                 f"[第 {iteration} 轮优化]："
                 f"节点数 {prev_node_count} -> {current_node_count} "
