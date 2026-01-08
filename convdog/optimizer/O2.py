@@ -3,6 +3,7 @@ from typing import Optional
 from convdog.core.graph import ConvDogModel
 from convdog.utils.logger import logger
 from convdog.simplifier.fuse_conv_pass import FuseConvPass
+from convdog.simplifier.fuse_gelu_pass import FuseGeluPass
 
 
 class O2Optimizer(object):
@@ -10,16 +11,19 @@ class O2Optimizer(object):
         self.model = model
         self.safe_mode = safe_mode
         self.conv_pass: Optional[FuseConvPass] = None
+        self.gelu_pass: Optional[FuseGeluPass] = None
         self.initialize_pass()
 
     def initialize_pass(self):
         self.conv_pass = FuseConvPass()
+        self.gelu_pass = FuseGeluPass()
 
     def replace_custom_ops(self):
         """
         替换自定义算子为标准算子。
         """
         self.conv_pass.replace_custom_ops(self.model.graph)
+        self.gelu_pass.replace_custom_ops(self.model.graph)
 
     def apply(self) -> ConvDogModel:
         """
@@ -38,6 +42,7 @@ class O2Optimizer(object):
             self.model.fold_tensors()
 
             self.conv_pass.run(self.model)
+            self.gelu_pass.run(self.model)
 
             # 获取优化后的节点数量
             current_node_count = len(self.model.graph.nodes)

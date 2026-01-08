@@ -150,7 +150,7 @@ def calculate_rel_error(optimized_proto: ModelStats, input_path: str):
     opt_bytes = optimized_proto.model.serialize_to_string()
     orig_sess = ort.InferenceSession(input_path, providers=["CPUExecutionProvider"])
     opt_sess = ort.InferenceSession(opt_bytes, providers=["CPUExecutionProvider"])
-    input_data = generate_random_inputs(orig_sess)
+    input_data = generate_random_inputs(opt_sess)
 
     # 1. 运行原始模型
     ref_outs, err_ref = run_inference(orig_sess, input_data)
@@ -190,7 +190,7 @@ def calculate_speed(optimized_proto: ModelStats, input_path: str):
     # 加载
     orig_model = ort.InferenceSession(input_path, providers=['CPUExecutionProvider'])
     opt_model = ort.InferenceSession(opt_bytes, providers=['CPUExecutionProvider'])
-    random_inputs = generate_random_inputs(orig_model)
+    random_inputs = generate_random_inputs(opt_model)
 
     # 预热
     _ = orig_model.run(None, random_inputs)
