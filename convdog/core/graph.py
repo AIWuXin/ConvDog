@@ -198,9 +198,21 @@ class ConvDogModel(object):
 
         self.sync_graph()
 
+    def register_custom_domain(self, domain_name="convdog.ai"):
+        # 检查是否已经注册过
+        existing_domains = [opset.domain for opset in self.model.opset_import]
+
+        if domain_name not in existing_domains:
+            # 向模型注入自定义算子集声明
+            opset = self.model.opset_import.add()
+            opset.domain = domain_name
+            opset.version = 1  # 自定义版本号
+            logger.debug(f"已成功注册私有算子域: {domain_name}")
+
     def sync_model(self):
         self.model = gs.export_onnx(self.graph)
         self._raw_graph = self.model.graph
+        self.register_custom_domain()
 
     def sync_graph(self):
         self._raw_graph = self.model.graph

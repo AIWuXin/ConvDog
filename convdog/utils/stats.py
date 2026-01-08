@@ -130,7 +130,7 @@ def generate_random_inputs(sess):
         return None
 
 
-def run_inference(sess, input_dict):
+def run_inference(sess: ort.InferenceSession, input_dict):
     """
     运行推理。改进版：优先从 Session 获取输入要求，实现类型自适应。
     """
@@ -142,14 +142,13 @@ def run_inference(sess, input_dict):
         return None, str(e)
 
 
-def calculate_rel_error(original_proto: ModelStats, optimized_proto: ModelStats):
+def calculate_rel_error(optimized_proto: ModelStats, input_path: str):
     """
     计算相对误差。不再依赖外部传入的 inputs_info，实现全自动收敛。
     """
     # 转换 bytes
-    orig_bytes = original_proto.model.serialize_to_string()
     opt_bytes = optimized_proto.model.serialize_to_string()
-    orig_sess = ort.InferenceSession(orig_bytes, providers=["CPUExecutionProvider"])
+    orig_sess = ort.InferenceSession(input_path, providers=["CPUExecutionProvider"])
     opt_sess = ort.InferenceSession(opt_bytes, providers=["CPUExecutionProvider"])
     input_data = generate_random_inputs(orig_sess)
 
@@ -184,13 +183,12 @@ def calculate_rel_error(original_proto: ModelStats, optimized_proto: ModelStats)
     return avg_error * 100
 
 
-def calculate_speed(original_proto: ModelStats, optimized_proto: ModelStats):
+def calculate_speed(optimized_proto: ModelStats, input_path: str):
     # 转换 bytes
-    orig_bytes = original_proto.model.serialize_to_string()
     opt_bytes = optimized_proto.model.serialize_to_string()
 
     # 加载
-    orig_model = ort.InferenceSession(orig_bytes, providers=['CPUExecutionProvider'])
+    orig_model = ort.InferenceSession(input_path, providers=['CPUExecutionProvider'])
     opt_model = ort.InferenceSession(opt_bytes, providers=['CPUExecutionProvider'])
     random_inputs = generate_random_inputs(orig_model)
 
@@ -275,7 +273,7 @@ def print_every_layer_quant_table(graph: ConvDogModel):
     console.print(table)
 
 
-def print_quant_summary(original: ModelStats, optimized: ModelStats):
+def print_quant_summary(original: ModelStats, optimized: ModelStats, input_path: str):
     """
     专家级看板：量化对比 + 回退分析 + 部署诊断
     """
@@ -337,7 +335,7 @@ def print_quant_summary(original: ModelStats, optimized: ModelStats):
     diag_table.add_row("Op Reduction", f"{reduction:.1f}%")
 
     # 误差分析
-    rel_error = calculate_rel_error(original, optimized)
+    rel_error = calculate_rel_error(optimized, input_path)
     if rel_error is not None:
         if rel_error == "ERR_TYPE":
             diag_table.add_row("Rel Error Δ", "[red bold]ORT 运行失败!!![/]")
@@ -353,7 +351,7 @@ def print_quant_summary(original: ModelStats, optimized: ModelStats):
         diag_table.add_row("Rel Error Δ", "[dim]ORT not found[/]")
 
     # 速度分析
-    ori_speed, opt_speed = calculate_speed(original, optimized)
+    ori_speed, opt_speed = calculate_speed(optimized, input_path)
     speedup = ori_speed / (opt_speed + 1e-9)
     diag_table.add_row("Ori Speed", f"{ori_speed:.2f}ms")
     diag_table.add_row("Opt Speed", f"{opt_speed:.2f}ms")
