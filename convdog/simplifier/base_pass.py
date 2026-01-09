@@ -25,3 +25,7 @@ class BasePass(ABC):
     @abstractmethod
     def process(self, graph: "gs.Graph") -> bool:
         pass
+
+
+    def replace_custom_ops(self, graph: "gs.Graph") -> None:
+        raise NotImplementedError

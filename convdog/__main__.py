@@ -2,18 +2,19 @@ import argparse
 import sys
 import time
 from typing import Dict, Optional
-import copy
 
 from convdog.core.graph import ConvDogModel
 from convdog.optimizer.O0 import O0Optimizer
 from convdog.optimizer.O1 import O1Optimizer
 from convdog.optimizer.O2 import O2Optimizer
+from convdog.optimizer.O3 import O3Optimizer
 from convdog.utils.logger import logger
 from convdog.utils.stats import (
     ModelStats,
     print_comparison_table,
     print_quant_summary
 )
+from convdog.core.typing_extension import BackendType
 
 
 def parse_shape_arg(shape_str) -> Optional[Dict[str, int]]:
@@ -38,11 +39,23 @@ def parse_level_arg(level_str) -> int:
     return {"O0": 0, "O1": 1, "O2": 2, "O3": 3}[level_str]
 
 
+def parse_backend_arg(backend_str) -> BackendType:
+    if backend_str == "default":
+        return BackendType.DEFAULT
+    elif backend_str == "qnn":
+        return BackendType.QNN
+    else:
+        logger.error("[x] 暂不支持的O3级别后端优化, 请尝试O2等级优化!")
+        sys.exit(-1)
+
+
 def optimize_model(
         input_path: str,
         output_path: str,
         opt_level: int = 0,
-        input_shapes: Optional[Dict[str, int]] = None
+        input_shapes: Optional[Dict[str, int]] = None,
+        fp16: bool = True,
+        backend: BackendType = BackendType.DEFAULT
 ):
     # 加载原始模型
     graph = ConvDogModel(input_path)
@@ -67,10 +80,16 @@ def optimize_model(
         logger.success(f"[*] O2等级优化完毕!")
 
     if opt_level >= 3:
-        pass
+        o3_optimizer = O3Optimizer(optimized_graph, backend)
+        optimized_graph = o3_optimizer.apply()
+        logger.success(f"[*] O3等级优化完毕!")
 
-    if opt_level >= 2 and input_path is not None:
+    if opt_level >= 2:
         o2_optimizer.replace_custom_ops()
+        graph.sync_model()
+
+    if opt_level >= 3:
+        o3_optimizer.replace_custom_ops()
         graph.sync_model()
 
     elapsed = time.time() - start_time
@@ -88,16 +107,23 @@ def main():
     parser = argparse.ArgumentParser(description="ConvDog🐕 模型优化工具")
     parser.add_argument("input", help="输入 ONNX 路径")
     parser.add_argument("output", help="输出 ONNX 路径")
-    parser.add_argument("level", type=parse_level_arg, help="优化等级")
+    parser.add_argument("level", type=parse_level_arg, help="优化等级, 可填O0~O3")
     parser.add_argument("--shapes", type=parse_shape_arg, help="静态化形状, 格式 'name:1,3,224,224'")
-    parser.add_argument("--fp16", action="store_false", help="fp16量化, 默认在O0阶段开启")
+    parser.add_argument("--no_fp16", action="store_true", help="fp16量化, 默认在O2阶段开启")
+    parser.add_argument(
+        "--backend", default=BackendType.DEFAULT,
+        type=parse_backend_arg, help="O3阶段选择的目标优化后端"
+    )
     args = parser.parse_args()
+    fp16 = not args.no_fp16
 
     optimize_model(
         args.input,
         args.output,
         args.level,
-        args.shapes
+        args.shapes,
+        fp16,
+        args.backend
     )
 
 

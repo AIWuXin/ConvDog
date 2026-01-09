@@ -36,13 +36,13 @@ class FuseLayerNormPass(BasePass):
 
     def process(self, graph: "gs.Graph") -> bool:
         changed = False
+        logger.debug("[O3]: 正在融合LayerNorm......")
         graph.cleanup().toposort()
 
         # 1. 以第一个 ReduceMean 为锚点尝试匹配
         for rm1_node in [n for n in graph.nodes if n.op == "ReduceMean"]:
             try:
                 # --- [拓扑校验阶段] ---
-
                 # 获取原始输入 X
                 input_x = rm1_node.inputs[0]
 
