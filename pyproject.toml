@@ -1,6 +1,6 @@
 [project]
 name = "convdog"
-version = "0.1.1"
+version = "0.1.3"
 description = "Add your description here"
 readme = "README.md"
 requires-python = "==3.12.*"
@@ -8,7 +8,6 @@ dependencies = [
     "numpy>=2.0",
     "onnx==1.18",
     "onnx-graphsurgeon>=0.5.8",
-    "onnxruntime>=1.23.2",
     "rich>=14.2.0",
 ]
 
@@ -27,3 +26,11 @@ convdog = "convdog:__main__"
 
 [project.entry-points.console_scripts]
 convdog = "convdog:__main__"
+
+[project.optional-dependencies]
+cuda = [
+    "onnxruntime-gpu>=1.23.2",
+]
+cpu = [
+    "onnxruntime>=1.23.2",
+]

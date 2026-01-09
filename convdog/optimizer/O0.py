@@ -42,7 +42,7 @@ class O0Optimizer(object):
                 # 美化打印进度
                 status_color = "green" if diff > 0 else "white"
                 logger.info(
-                    f" [折叠第 {i+1:02d} 轮] 节点数: [bold yellow]{prev_node_count}[/] -> "
+                    f"[折叠第 {i+1:02d} 轮] 节点数: [bold yellow]{prev_node_count}[/] -> "
                     f"[bold cyan]{current_count}[/] "
                     f"[{status_color}]已削减: {diff}[/]"
                 )

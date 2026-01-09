@@ -141,6 +141,35 @@ def run_inference(sess: ort.InferenceSession, input_dict):
         logger.error(e)
         return None, str(e)
 
+def get_best_providers():
+    """
+    动态探测当前环境支持的最佳后端
+    """
+    available_providers = ort.get_available_providers()
+
+    # 优先级顺序：CUDA > CPU
+    # 如果之后支持 NPU (OpenVINO, ACL) 可以在此扩充
+    target_providers = []
+
+    if "CUDAExecutionProvider" in available_providers:
+        logger.debug("[后端探测] 发现 GPU 环境，启用 CUDA 加速")
+        # 可以添加具体的 Provider 选项（如设备 ID，显存限制等）
+        target_providers.append((
+            "CUDAExecutionProvider",
+            {
+                "device_id": 0,
+                "arena_extend_strategy": "kNextPowerOfTwo",
+                "gpu_mem_limit": 4 * 2 ** 30, # 示例：限制 2G
+                "cudnn_conv_algo_search": "EXHAUSTIVE",
+                "do_copy_in_default_stream": True
+            }
+        ))
+
+    # CPU 总是作为最后的保底
+    target_providers.append("CPUExecutionProvider")
+
+    return target_providers
+
 
 def calculate_rel_error(optimized_proto: ModelStats, input_path: str):
     """
@@ -148,8 +177,16 @@ def calculate_rel_error(optimized_proto: ModelStats, input_path: str):
     """
     # 转换 bytes
     opt_bytes = optimized_proto.model.serialize_to_string()
-    orig_sess = ort.InferenceSession(input_path, providers=["CPUExecutionProvider"])
-    opt_sess = ort.InferenceSession(opt_bytes, providers=["CPUExecutionProvider"])
+    orig_sess = ort.InferenceSession(
+        input_path, providers=get_best_providers()
+    )
+    sess_option = ort.SessionOptions()
+    # sess_option.optimized_model_filepath = r"tests\res\onnx\optimized_model_a.onnx"
+    # sess_option.log_severity_level = 1
+    # sess_option.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
+    opt_sess = ort.InferenceSession(
+        opt_bytes, providers=get_best_providers(), sess_options=sess_option
+    )
     input_data = generate_random_inputs(opt_sess)
 
     # 1. 运行原始模型
@@ -188,13 +225,14 @@ def calculate_speed(optimized_proto: ModelStats, input_path: str):
     opt_bytes = optimized_proto.model.serialize_to_string()
 
     # 加载
-    orig_model = ort.InferenceSession(input_path, providers=['CPUExecutionProvider'])
-    opt_model = ort.InferenceSession(opt_bytes, providers=['CPUExecutionProvider'])
+    orig_model = ort.InferenceSession(input_path, providers=get_best_providers())
+    opt_model = ort.InferenceSession(opt_bytes, providers=get_best_providers())
     random_inputs = generate_random_inputs(opt_model)
 
     # 预热
-    _ = orig_model.run(None, random_inputs)
-    _ = opt_model.run(None, random_inputs)
+    for _ in range(10):
+        _ = orig_model.run(None, random_inputs)
+        _ = opt_model.run(None, random_inputs)
 
     # 统计
     iters = 30

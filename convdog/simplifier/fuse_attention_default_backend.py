@@ -17,24 +17,36 @@ class FuseAttentionPass(BasePass):
                 if score_matmul.op != "MatMul" or context_matmul.op != "MatMul": continue
 
                 # --- 2. 深度溯源函数：通过形状和最大搜索范围定位真正的 Input ---
-                def find_true_origin(start_node, depth_limit=12):
+                def find_true_origin(start_node, depth_limit=16):
                     curr = start_node
                     collected_in_branch = []
 
-                    # 定义真正源头的特征：
-                    # 1. 形状包含了 [..., 3, Heads, ...] 或者是图的输入
-                    # 2. 或者是那个 3 分支的起始点 (Gather 的上一层)
                     for _ in range(depth_limit):
                         if curr not in collected_in_branch:
                             collected_in_branch.append(curr)
 
-                        # 如果当前节点是 Gather 且向上是 Transpose(3,...)，这通常就是源头
-                        if curr.op == "Gather":
-                            parent = curr.inputs[0].inputs[0]
-                            return parent, collected_in_branch
+                        # 优先识别 branching 算子
+                        if curr.op in ["Gather", "Split", "Squeeze"]:
+                            # 如果是 Squeeze，先看它上一级是不是 Split
+                            if curr.op == "Squeeze":
+                                parent_node = curr.inputs[0].inputs[0] if curr.inputs[0].inputs else None
+                                if parent_node and parent_node.op == "Split":
+                                    # 记录 Split 节点并继续向上
+                                    if parent_node not in collected_in_branch:
+                                        collected_in_branch.append(parent_node)
+                                    target = parent_node.inputs[0].inputs[0]
+                                    return target, collected_in_branch
+                                # 如果 Squeeze 上面不是 Split，继续按普通节点追溯
 
-                        # 检查是否有输入，没有则到头了
-                        if not curr.inputs or not curr.inputs[0].inputs:
+                            elif curr.op == "Split":
+                                # Split 的输入即源头
+                                return curr.inputs[0].inputs[0], collected_in_branch
+
+                            elif curr.op == "Gather":
+                                return curr.inputs[0].inputs[0], collected_in_branch
+
+                        # 普通追溯
+                        if not curr.inputs or not isinstance(curr.inputs[0], gs.Variable) or not curr.inputs[0].inputs:
                             break
                         curr = curr.inputs[0].inputs[0]
                     return curr, collected_in_branch
