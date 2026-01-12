@@ -1,5 +1,6 @@
 from typing import Optional
 from convdog.core.graph import ConvDogModel
+from convdog.simplifier.eliminate_concat_split_pass import EliminateConcatSplitPass
 from convdog.utils.logger import logger
 from convdog.simplifier.fuse_consecutive_node_pass import FuseConsecutiveNodePass
 from convdog.simplifier.dead_code_elimination_pass import DeadCodeEliminationPass
@@ -18,6 +19,7 @@ class O1Optimizer(object):
         self.gemm_pass: Optional[GemmFusionPass] = None
         self.multi_gather_pass: Optional[FuseMultipleGatherPass] = None
         self.inverse_pass: Optional[InverseOpCancellationPass] = None
+        self.eliminate_concat_pass: Optional[EliminateConcatSplitPass] = None
         self.initialize_pass()
 
     def initialize_pass(self):
@@ -26,6 +28,7 @@ class O1Optimizer(object):
         self.gemm_pass = GemmFusionPass()
         self.multi_gather_pass = FuseMultipleGatherPass()
         self.inverse_pass = InverseOpCancellationPass()
+        self.eliminate_concat_pass = EliminateConcatSplitPass()
 
     def apply(self) -> ConvDogModel:
         logger.info("[O1]: 开始执行初步算子优化和拓扑结构优化...")
@@ -42,6 +45,7 @@ class O1Optimizer(object):
             self.dead_code_elimination_pass.run(self.model)
             self.gemm_pass.run(self.model)
             self.inverse_pass.run(self.model)
+            self.eliminate_concat_pass.run(self.model)
             # self.multi_gather_pass.run(self.model)
 
             self.model.reset_value_info()
