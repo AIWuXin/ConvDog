@@ -1,124 +1,114 @@
 import numpy as np
 import onnx
-from onnx import TensorProto, numpy_helper
+import onnx_graphsurgeon as gs
 from convdog.utils.logger import logger
 from convdog.core.graph import ConvDogModel
 
-
 class FP16Quantizer:
-    def __init__(self, graph: ConvDogModel, safe_mode=False):
-        self.graph = graph
-        self.model = self.graph.model
+    def __init__(self, model: ConvDogModel, safe_mode=True):
+        """
+        FP16 深度量化器 (基于 GraphSurgeon)
+        :param model: ConvDogModel 对象，内部维护 gs.Graph
+        :param safe_mode: 是否开启安全模式，保护 Resize/Clip 等算子的关键输入
+        """
+        self.convdog_model = model
         self.safe_mode = safe_mode
         self.protected_names = set()
 
     def apply(self):
-        logger.info("[O0] 开始语义感知的 FP16 深度量化")
+        logger.info("[O1] 开始语义感知的FP16深度转换")
 
-        # 1. 扫描受限张量
-        self.protected_names = self._get_required_fp32_tensors()
+        # 1. 扫描受限张量 (根据算子规范保护必须为 FP32 的输入)
+        if self.safe_mode:
+            self.protected_names = self._get_required_fp32_tensors()
 
-        # 2. 原地修改 Initializer (权重)
-        self._apply_weights()
+        # 2. 统一处理所有张量 (权重 + 中间变量 + 输入输出)
+        self._convert_all_tensors()
 
-        # 3. 修改node io
-        self._apply_value_infos()
+        # 3. 处理常数节点 (ONNX 中的 Constant Op，在 gs 中可能表现为独立节点或 Constant 对象)
+        self._fix_constant_nodes()
 
-        # 3. 同步计算图
-        self._sync_graph()
+        # 4. 图清理与同步
+        self.convdog_model.graph.cleanup().toposort()
+        self.convdog_model.sync_model()
 
-        # 4. 安全的形状推断
-        self._safe_inference()
-
-        self.graph.update_indexes()
-
-        logger.success("[O0] FP16 转换及图语义修复完成")
-        return self.graph
-
-    def _apply_weights(self):
-        # 直接遍历 Protobuf 列表，不经过中间字典，确保修改生效
-        for init in self.model.graph.initializer:
-            if init.name in self.protected_names:
-                continue
-
-            if init.data_type == TensorProto.FLOAT:
-                # 提取数据
-                arr = numpy_helper.to_array(init)
-                # 检查溢出并转换
-                arr_fp16 = np.clip(arr, -65504, 65504).astype(np.float16)
-
-                # 重新构造这个 Initializer 节点
-                self.graph.add_initializer(init.name, arr_fp16)
-                logger.debug(f"已强制转换权重: {init.name}")
-
-    def _apply_value_infos(self):
-        for idx, value_info in enumerate(self.model.graph.value_info):
-            value_type = value_info.type.tensor_type.elem_type
-            if value_type == TensorProto.FLOAT:
-                if value_info.name not in self.protected_names:
-                    self.model.graph.value_info[idx].type.tensor_type.elem_type = TensorProto.FLOAT16
-
-    def _sync_graph(self):
-        for idx, node in enumerate(self.model.graph.node):
-            if node.op_type == "Constant":
-                self._apply_constant(idx)
-
-        # 类型对齐
-        for x in list(self.model.graph.input) + list(self.model.graph.output):
-            if x.name not in self.protected_names:
-                x.type.tensor_type.elem_type = TensorProto.FLOAT16
-
-    def _safe_inference(self):
-        """执行推断并确保结果不回退"""
-        from onnx import shape_inference
-        # 提升 IR 版本以支持更高的 FP16 兼容性
-        if self.model.ir_version < 7:
-            self.model.ir_version = 7
-
-        try:
-            # 这里的推断必须严谨。如果推断失败，我们至少保留了已经修改好类型的 model
-            inferred = shape_inference.infer_shapes(self.model, check_type=True)
-            self.graph.model = inferred
-            self.model = inferred
-            logger.debug("Core: 形状推断与类型传导刷新成功")
-        except Exception as e:
-            logger.error(f"Core: 形状推断发生错误: {e}")
-
-        try:
-            onnx.checker.check_model(self.model, full_check=True)
-        except Exception as e:
-            logger.error(e)
-            logger.warning("fp16图检查失败!!!")
+        logger.success("[O2] FP16转换及图语义修复完成")
+        return self.convdog_model
 
     def _get_required_fp32_tensors(self):
         """
-        [逻辑分离] 扫描所有节点，返回必须保持为 float32 的输入张量名单
-        参考自 ONNX 算子规范。
+        扫描 GS 图，返回必须保持为 float32 的张量名称集合
         """
         protected = set()
-        for node in self.graph.model.graph.node:
-            # Resize / Upsample 的特定输入必须是 float32
-            if node.op_type in ["Resize", "Upsample"]:
-                # index 1: roi, index 2: scales (必须为 float32)
+        for node in self.convdog_model.graph.nodes:
+            # Resize / Upsample 的 scales 和 roi 必须是 float32
+            if node.op in ["Resize", "Upsample"]:
+                # index 1: roi, index 2: scales
                 for i in [1, 2]:
-                    if len(node.input) > i and node.input[i]:
-                        protected.add(node.input[i])
+                    if i < len(node.inputs) and isinstance(node.inputs[i], (gs.Variable, gs.Constant)):
+                        protected.add(node.inputs[i].name)
 
-            # Clip 的 min/max 建议保持 float32 保证数值稳定性
-            elif node.op_type == "Clip":
-                for i in range(1, len(node.input)):
-                    if node.input[i]:
-                        protected.add(node.input[i])
+            # Clip 的 min/max 若存在，保持 FP32 稳定性更好
+            elif node.op == "Clip":
+                for i in range(1, len(node.inputs)):
+                    if node.inputs[i]:
+                        protected.add(node.inputs[i].name)
 
-            # 在此处可以扩展其他必须为 FP32 的算子，如 TopK, MeanVarianceNormalization 等
+            # 如果是某些特定的后端算子（如 TopK 的值），也可以在此添加
         return protected
 
-    def _apply_constant(self, idx):
-        node = self.model.graph.node[idx]
-        for attr in node.attribute:
-            if attr.name == "value":
-                # 直接修改 TensorProto 内部数据类型
-                attr.t.data_type = TensorProto.FLOAT16 # FLOAT16
-                # 重新填入 fp16 字节流
-                original_arr = numpy_helper.to_array(attr.t)
-                attr.t.raw_data = original_arr.astype(np.float16).tobytes()
+    def _convert_all_tensors(self):
+        """
+        遍历图中所有张量，统一切换 dtype
+        gs.Graph.tensors() 返回的是 Dict[str, Tensor]，包含所有的 Variable 和 Constant
+        """
+        count_weights = 0
+        count_vars = 0
+
+        for name, tensor in self.convdog_model.graph.tensors().items():
+            if name in self.protected_names:
+                continue
+
+            # 处理权重 (Constant)
+            if isinstance(tensor, gs.Constant) and tensor.dtype == np.float32:
+                # np.clip 避免超出 FP16 表示范围 (inf)
+                tensor.values = np.clip(tensor.values, -65504, 65504).astype(np.float16)
+                count_weights += 1
+
+            # 处理变量 (Variable: 包含输入、输出和中间张量)
+            elif isinstance(tensor, gs.Variable) and tensor.dtype == np.float32:
+                tensor.dtype = np.float16
+                count_vars += 1
+
+        logger.debug(f"已转换 {count_weights} 个权重张量和 {count_vars} 个变量张量至 FP16")
+
+    def _fix_constant_nodes(self):
+        """
+        额外处理那些以 Node 形式存在的 Constant 算子
+        """
+        for node in self.convdog_model.graph.nodes:
+            if node.op == "Constant":
+                # Constant 算子的属性通常是 'value'
+                val = node.attrs.get("value")
+                if val is not None and val.dtype == np.float32:
+                    node.attrs["value"].values = val.values.astype(np.float16)
+                    # 也可以考虑将 Constant 算子直接折叠进 Initializer (gs.Constant)
+                    # gs 的 cleanup 往往会自动处理
+
+    def _refresh_model(self):
+        """
+        同步并导出模型，强制进行 ONNX 层面推断
+        """
+        try:
+            # 调用 ConvDogModel 封装的同步逻辑：gs.export_onnx -> shape_inference
+            self.convdog_model.fold_tensors()
+
+            # 手动提升 IR 版本以支持更现代的 FP16 表达
+            export_model = self.convdog_model.model
+            if export_model.ir_version < 7:
+                export_model.ir_version = 7
+
+            onnx.checker.check_model(export_model, full_check=True)
+            logger.debug("[Core]: 形状推断与类型传导刷新成功")
+        except Exception as e:
+            logger.warning(f"FP16 图检查存在非致命警告 (可能是自定义算子): {e}")

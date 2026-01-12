@@ -13,6 +13,7 @@ import onnx_graphsurgeon as gs
 
 from convdog.core.graph import ConvDogModel
 from convdog.utils.logger import logger
+from convdog.core.typing_extension import DTYPE_MAP
 
 
 
@@ -135,6 +136,11 @@ def run_inference(sess: ort.InferenceSession, input_dict):
     运行推理。改进版：优先从 Session 获取输入要求，实现类型自适应。
     """
     try:
+        for expected_input in sess.get_inputs():
+            name = expected_input.name
+            dtype = expected_input.type
+            target_dtype = DTYPE_MAP[dtype]
+            input_dict[name] = input_dict[name].astype(target_dtype)
         outputs = sess.run(None, input_dict)
         return outputs, None
     except Exception as e:
@@ -231,19 +237,19 @@ def calculate_speed(optimized_proto: ModelStats, input_path: str):
 
     # 预热
     for _ in range(10):
-        _ = orig_model.run(None, random_inputs)
-        _ = opt_model.run(None, random_inputs)
+        _ = run_inference(orig_model, random_inputs)
+        _ = run_inference(opt_model, random_inputs)
 
     # 统计
     iters = 30
     t1 = time.time_ns()
     for _ in range(iters):
-        _ = orig_model.run(None, random_inputs)
+        _ = run_inference(orig_model, random_inputs)
     t2 = time.time_ns()
     orig_time_it = (t2 - t1) / 1_000_000 / iters
     t1 = time.time_ns()
     for _ in range(iters):
-        _ = opt_model.run(None, random_inputs)
+        _ = run_inference(opt_model, random_inputs)
     t2 = time.time_ns()
     opt_time_it = (t2 - t1) / 1_000_000 / iters
 

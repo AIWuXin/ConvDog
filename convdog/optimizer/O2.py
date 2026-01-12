@@ -1,6 +1,7 @@
 from typing import Optional
 
 from convdog.core.graph import ConvDogModel
+from convdog.quantizer.fp16 import FP16Quantizer
 from convdog.utils.logger import logger
 from convdog.simplifier.fuse_conv_pass import FuseConvPass
 from convdog.simplifier.fuse_gelu_pass import FuseGeluPass
@@ -8,12 +9,15 @@ from convdog.simplifier.fuse_layernorm_pass import FuseLayerNormPass
 
 
 class O2Optimizer(object):
-    def __init__(self, model: ConvDogModel, safe_mode=False):
+    def __init__(self, model: ConvDogModel, fp16=False):
         self.model = model
-        self.safe_mode = safe_mode
+        self.fp16 = fp16
         self.conv_pass: Optional[FuseConvPass] = None
         self.gelu_pass: Optional[FuseGeluPass] = None
         self.layer_norm_pass: Optional[FuseLayerNormPass] = None
+        self.fp16_quantizer: FP16Quantizer = FP16Quantizer(
+            model=model
+        )
         self.initialize_pass()
 
     def initialize_pass(self):
@@ -70,5 +74,12 @@ class O2Optimizer(object):
             if iteration > 100:
                 logger.warning("[O2]: 迭代次数过多，强制跳出，请检查图中是否存在环路。")
                 break
+
+        if self.fp16:
+            logger.info("[O2]: 开始fp16量化......")
+            self.model = self.fp16_quantizer.apply()
+            self.model.sync_model()
+            self.model.fold_tensors()
+            self.model.sync_graph()
 
         return self.model

@@ -75,7 +75,7 @@ def optimize_model(
         optimized_graph = o1_optimizer.apply()
         logger.success(f"[*] O1等级优化完毕!")
     if opt_level >= 2:
-        o2_optimizer = O2Optimizer(optimized_graph)
+        o2_optimizer = O2Optimizer(optimized_graph, fp16)
         optimized_graph = o2_optimizer.apply()
         logger.success(f"[*] O2等级优化完毕!")
 
@@ -109,20 +109,19 @@ def main():
     parser.add_argument("output", help="输出 ONNX 路径")
     parser.add_argument("level", type=parse_level_arg, help="优化等级, 可填O0~O3")
     parser.add_argument("--shapes", type=parse_shape_arg, help="静态化形状, 格式 'name:1,3,224,224'")
-    parser.add_argument("--no_fp16", action="store_true", help="fp16量化, 默认在O2阶段开启")
+    parser.add_argument("--fp16", action="store_true", help="fp16量化, 选择后在O2阶段开启")
     parser.add_argument(
         "--backend", default=BackendType.DEFAULT,
         type=parse_backend_arg, help="O3阶段选择的目标优化后端"
     )
     args = parser.parse_args()
-    fp16 = not args.no_fp16
 
     optimize_model(
         args.input,
         args.output,
         args.level,
         args.shapes,
-        fp16,
+        args.fp16,
         args.backend
     )
 
